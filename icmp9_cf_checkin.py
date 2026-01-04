@@ -66,7 +66,7 @@ class ICMP9Checkin:
         """登录流程"""
         try:
             logger.info(f"[{self.email}] 打开登录页...")
-            self.page.get('https://icmp9.com/auth/login')
+            self.page.get('https://icmp9.com/user/login')
             self.handle_turnstile()
             
             # 输入账号
