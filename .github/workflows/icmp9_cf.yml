@@ -1,0 +1,45 @@
+name: ICMP9 Cloudflare Bypass Checkin
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # UTC 03:00
+  workflow_dispatch:
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        pip install DrissionPage requests
+        
+    - name: Install Chrome and Xvfb
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y google-chrome-stable xvfb
+        
+    - name: Run Checkin with Xvfb
+      env:
+        # 这里对应你在 GitHub Secrets 设置的变量名
+        ICMP9_EMAIL: ${{ secrets.ICMP9_EMAIL }}
+        ICMP9_PASSWORD: ${{ secrets.ICMP9_PASSWORD }}
+        
+        # 兼容之前的多账号变量 (如果不需要可不填)
+        ICMP9_ACCOUNTS: ${{ secrets.ICMP9_ACCOUNTS }}
+        
+        # Telegram 通知配置
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        
+        GITHUB_ACTIONS: true
+      run: |
+        xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python icmp9_cf_checkin.py
