@@ -70,7 +70,7 @@ class ICMP9Checkin:
             self.handle_turnstile()
             
             # 输入账号
-            email_ele = self.page.ele('css:input[type="email"]') or self.page.ele('css:input[name="email"]')
+            email_ele = self.page.ele('css:input[type="username"]') or self.page.ele('css:input[name="username"]')
             if not email_ele:
                 logger.error("找不到邮箱输入框")
                 return False
