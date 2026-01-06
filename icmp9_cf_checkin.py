@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-ICMP9 DrissionPage 最终适配版
-更新内容：
-1. 登录框适配：修改为 <input id="username"> 定位
-2. 保持之前的弹窗处理、侧边栏点击、ID数据抓取逻辑
+ICMP9 DrissionPage 最终修复版
+修复内容：
+1. 补全缺失的 import requests
+2. 修复 get_frame 报错 (增加类型判断)
+3. 保持登录框 id="username" 的适配
 """
 
 import os
 import time
 import logging
+import requests  # [修复] 补全 requests 库
 from datetime import datetime
 from DrissionPage import ChromiumPage, ChromiumOptions
 
@@ -50,44 +52,50 @@ class ICMP9Checkin:
         except: pass
 
     def solve_turnstile(self):
-        """处理 Cloudflare"""
+        """
+        处理 Cloudflare (修复版)
+        先检查是否存在 iframe 元素，再尝试获取 frame 对象，避免报错
+        """
         start_time = time.time()
         while time.time() - start_time < 8:
-            iframe = self.page.get_frame('@src^https://challenges.cloudflare.com')
-            if iframe:
-                btn = iframe.ele('tag:input') or iframe.ele('@type=checkbox') or iframe.ele('text=Verify you are human')
-                if btn:
-                    try:
-                        logger.info("点击 CF 验证...")
-                        btn.click()
-                        time.sleep(2)
-                    except: pass
-                if "Success" in iframe.html:
-                    return True
+            try:
+                # [修复] 使用更精准的 css 选择器查找 iframe 标签
+                # 避免找到 div 等非 frame 元素导致报错
+                iframe_ele = self.page.ele('css:iframe[src*="cloudflare"]', timeout=2)
+                
+                if iframe_ele:
+                    # 获取 frame 上下文
+                    iframe = self.page.get_frame(iframe_ele)
+                    if iframe:
+                        # 尝试点击内部的 checkbox
+                        btn = iframe.ele('tag:input') or iframe.ele('@type=checkbox') or iframe.ele('text=Verify you are human')
+                        if btn:
+                            logger.info("点击 CF 验证...")
+                            btn.click()
+                            time.sleep(2)
+                        
+                        # 检查是否成功
+                        if "Success" in iframe.html:
+                            return True
+            except Exception as e:
+                # 忽略验证过程中的瞬时错误
+                pass
+            
             time.sleep(1)
         return True
 
     def login(self):
-        """登录逻辑 (已针对 input#username 修正)"""
+        """登录逻辑"""
         try:
             logger.info(f"1. 访问登录页...")
             self.page.get(f"{self.base_url}/user/login")
             self.solve_turnstile()
             
-            # ==========================================
-            # [修正点] 适配新的输入框 HTML
-            # <input type="text" id="username" name="username" ...>
-            # ==========================================
             logger.info("2. 输入账号信息...")
-            
             # 优先使用 id="username"
             user_input = self.page.ele('#username')
-            
-            # 备用：使用 name="username"
             if not user_input:
                 user_input = self.page.ele('@name=username')
-            
-            # 备用：使用 placeholder
             if not user_input:
                 user_input = self.page.ele('@placeholder:用户名')
 
@@ -96,13 +104,9 @@ class ICMP9Checkin:
                 self.save_evidence("login_input_missing")
                 return False
             
-            # 输入账号
             user_input.input(self.email)
-            
-            # 输入密码 (通常 type="password" 是通用的)
             self.page.ele('css:input[type="password"]').input(self.password)
             
-            # 3. 点击登录
             logger.info("3. 点击登录按钮...")
             self.solve_turnstile()
             
@@ -113,7 +117,6 @@ class ICMP9Checkin:
                 logger.error("❌ 未找到登录按钮")
                 return False
             
-            # 4. 等待跳转
             logger.info("4. 等待跳转 (15秒)...")
             time.sleep(15)
             
@@ -122,17 +125,17 @@ class ICMP9Checkin:
                 logger.info("✅ 登录成功")
                 return True
             
-            # 检查是否有错误提示
+            # 错误检测
             body_text = self.page.ele('tag:body').text
             if "验证码" in body_text:
                 logger.error("⛔ 需要二次验证")
                 self.save_evidence("login_2fa")
                 return False
-            elif "密码错误" in body_text or "用户不存在" in body_text:
+            elif "密码错误" in body_text:
                 logger.error("❌ 账号密码错误")
                 return False
 
-            # 尝试强制跳转
+            # 强制跳转尝试
             if "user" in self.page.url:
                 logger.info("🔄 尝试强制跳转 Dashboard...")
                 self.page.get(f"{self.base_url}/user/dashboard")
@@ -167,13 +170,11 @@ class ICMP9Checkin:
             except: pass
             time.sleep(1)
 
-            # 2. 点击导航 [每日签到]
-            # <a class="nav-item" data-section="checkin">
+            # 2. 点击导航
             logger.info("寻找导航 [每日签到]...")
             nav_item = self.page.ele('css:a[data-section="checkin"]') or self.page.ele('@data-section=checkin')
             
             if not nav_item:
-                # 移动端兼容
                 menu_btn = self.page.ele('.navbar-toggler')
                 if menu_btn:
                     menu_btn.click()
@@ -188,7 +189,7 @@ class ICMP9Checkin:
                 self.save_evidence("nav_missing")
                 return False
 
-            # 3. 点击按钮 #checkin-btn
+            # 3. 点击按钮
             logger.info("寻找按钮 [#checkin-btn]...")
             self.solve_turnstile()
             
@@ -257,6 +258,7 @@ class MultiAccountManager:
             if "成功" in stats['status'] or "已" in stats['status']:
                 msg += f"🎁 {stats['today_reward']} | 🗓 {stats['total_days']}\n"
             msg += "-" * 20 + "\n"
+        # [修复] 确保 requests 已定义
         requests.post(f"https://api.telegram.org/bot{self.bot_token}/sendMessage", json={"chat_id": self.chat_id, "text": msg, "parse_mode": "HTML"})
 
     def run_all(self):
