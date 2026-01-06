@@ -2,8 +2,7 @@ name: ICMP9 Auto Checkin
 
 on:
   schedule:
-    # 每天北京时间 10:00 运行
-    - cron: '0 2 * * *'
+    - cron: '0 2 * * *' # 北京时间 10:00
   workflow_dispatch:
 
 jobs:
@@ -37,5 +36,4 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         GITHUB_ACTIONS: true
       run: |
-        # 请确保文件名与仓库中的一致，这里假设是 icmp9_cf_checkin.py
         xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python icmp9_cf_checkin.py
