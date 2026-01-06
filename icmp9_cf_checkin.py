@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-ICMP9 DrissionPage 自动签到脚本 (强力定位版)
-修复：
-1. 强制设置大窗口，防止侧边栏折叠
-2. 引入 page.wait.ele 显式等待，防止页面未加载完成
-3. 使用 XPath 强力定位，忽略空格和层级
-4. 增加调试信息，失败时打印页面源码
+ICMP9 DrissionPage 自动签到脚本 (最终修复版)
+修复内容：
+1. 修复 'ChromiumPageWaiter' 报错，改用手动 while 循环等待
+2. 保持 XPath 强力定位策略
+3. 增加对移动端折叠菜单的兼容处理
 """
 
 import os
@@ -42,15 +41,14 @@ class ICMP9Checkin:
         
         co.set_argument('--no-sandbox')
         co.set_argument('--disable-gpu')
-        # 强制设置大窗口，防止侧边栏变成汉堡菜单
+        # 强制大窗口，减少移动端样式出现的概率
         co.set_argument('--window-size=1920,1080') 
         co.set_argument('--start-maximized')
         co.set_argument('--lang=zh-CN') 
         co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
         self.page = ChromiumPage(co)
-        # 设置全局查找超时时间为 20 秒
-        self.page.set.timeouts(20)
+        self.page.set.timeouts(10)
 
     def handle_turnstile(self):
         """处理 Cloudflare 验证"""
@@ -93,8 +91,7 @@ class ICMP9Checkin:
             login_btn = self.page.ele('css:button[type="submit"]') or self.page.ele('text:登录')
             if login_btn: login_btn.click()
             
-            # 增加等待时间，防止跳转过慢
-            time.sleep(5)
+            time.sleep(5) # 等待跳转
             self.handle_turnstile()
             
             if "dashboard" in self.page.url or "user" in self.page.url:
@@ -138,64 +135,67 @@ class ICMP9Checkin:
         try:
             if "dashboard" not in self.page.url:
                 self.page.get(f"{self.base_url}/user/dashboard")
-                time.sleep(5) # 给足时间加载 dashboard
+                time.sleep(5)
 
             # ==========================================
-            # 4. 强力寻找 [每日签到]
+            # 4. 寻找 [每日签到] (手动循环等待)
             # ==========================================
             logger.info("4. 寻找 [每日签到] 按钮...")
             
-            # 使用 wait.ele 等待元素出现，而不是立即查找
-            # 策略1: XPath 模糊匹配 (最强力，忽略层级和空格)
-            # 意思是：寻找任意包含 "每日签到" 文本的 <a> 标签
-            sidebar = self.page.wait.ele('x://a[contains(., "每日签到")]', timeout=10)
+            sidebar = None
             
-            # 策略2: 如果上面的没找到，尝试 data-section
-            if not sidebar:
-                logger.info("XPath 定位超时，尝试属性定位...")
-                sidebar = self.page.wait.ele('@data-section=checkin', timeout=5)
+            # 手动实现等待循环，尝试 10 秒
+            end_time = time.time() + 10
+            while time.time() < end_time:
+                # 策略A: XPath 强力匹配 (包含文本的 <a> 标签)
+                # 忽略空格和层级，最稳
+                sidebar = self.page.ele('x://a[contains(., "每日签到")]')
+                
+                # 策略B: 属性匹配
+                if not sidebar:
+                    sidebar = self.page.ele('@data-section=checkin')
+                
+                # 策略C: 模糊文本
+                if not sidebar:
+                    sidebar = self.page.ele('text:每日签到')
+                
+                if sidebar:
+                    break
+                time.sleep(1)
             
-            # 策略3: 检查是否被折叠在移动端菜单里
+            # 如果还没找到，尝试点击移动端汉堡菜单 (以防万一)
             if not sidebar:
-                logger.warning("侧边栏未找到，尝试寻找移动端菜单按钮...")
-                # 尝试点击常见的汉堡菜单图标 (通常是 svg 或 button)
-                # 这一步是猜测，如果不适用可以忽略
-                menu_btn = self.page.ele('.navbar-toggler') or self.page.ele('css:button[class*="toggle"]')
+                logger.warning("常规寻找失败，尝试查找移动端菜单按钮...")
+                # 常见的移动端菜单按钮 class
+                menu_btn = self.page.ele('.navbar-toggler') or self.page.ele('button[class*="toggle"]') or self.page.ele('.mobile-menu-btn')
+                
                 if menu_btn:
                     logger.info("点击移动端菜单按钮...")
                     menu_btn.click()
                     time.sleep(2)
+                    # 再次尝试寻找
                     sidebar = self.page.ele('x://a[contains(., "每日签到")]')
 
             if sidebar:
-                # 滚动到元素可见
-                # self.page.scroll.to_ele(sidebar)
-                logger.info(">>> 找到侧边栏按钮，准备点击 <<<")
-                
-                # 有时候元素被遮挡，使用 js 点击最稳
+                logger.info(">>> 找到侧边栏按钮，点击 <<<")
                 try:
                     sidebar.click()
                 except:
-                    logger.info("常规点击失败，尝试 JS 强制点击...")
+                    # 如果元素被遮挡，使用JS强制点击
                     self.page.run_js('arguments[0].click()', sidebar)
                     
                 time.sleep(5) # 等待右侧加载
             else:
-                logger.error("!!! 严重错误: 彻底无法找到侧边栏按钮 !!!")
-                logger.error("当前页面 URL: " + self.page.url)
-                logger.info("正在打印页面 HTML 前 2000 个字符进行调试:")
-                logger.info(self.page.html[:2000])
-                # 如果找不到侧边栏，尝试直接去签到API可能会失败，但可以尝试抓取是否已签到
-                # return False 
-                # 这里不直接返回，尝试看看是不是已经在签到页面了
-
+                logger.error("!!! 无法找到侧边栏按钮 !!!")
+                logger.info("调试: 打印页面HTML片段:")
+                logger.info(self.page.html[:1500])
+                # 不直接退出，尝试检查是否已经停留在签到页面(URL包含checkin?)或者直接找签到按钮
+                
             # ==========================================
             # 逻辑分支
             # ==========================================
-            # 再次处理可能的验证
             self.handle_turnstile()
 
-            # 关闭弹窗
             try:
                 close = self.page.ele('@aria-label=Close') or self.page.ele('.ant-modal-close')
                 if close: close.click()
@@ -225,7 +225,6 @@ class ICMP9Checkin:
                     self.stats["status"] = "今日已签到 (无按钮)"
                 else:
                     self.stats["status"] = "异常：未找到签到按钮"
-                    # 如果上面侧边栏没点到，这里肯定也是找不到的
 
             # ==========================================
             # 数据读取
