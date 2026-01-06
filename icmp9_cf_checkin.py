@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-ICMP9 DrissionPage 自动签到脚本 (完美通知版)
-功能：
-1. 自动过盾登录
-2. 识别“今日已签到”状态
-3. 精准提取：累计签到、累计获得、今日奖励、连续签到
-4. 发送包含所有数据的 Telegram 通知
+ICMP9 DrissionPage 自动签到脚本 (最终逻辑版)
+流程：
+1. 登录 -> 点击侧边栏[每日签到]
+2. 自动检测并通过 Cloudflare 人机验证
+3. 判断按钮状态：
+   - 若未签到：点击签到 -> 等待结果
+   - 若已签到：跳过点击
+4. 抓取：今日奖励、累计获得、累计签到、连续签到
+5. 发送 Telegram 通知
 """
 
 import os
 import time
 import logging
 import requests
+import re
 from datetime import datetime
 from DrissionPage import ChromiumPage, ChromiumOptions
 
@@ -24,17 +28,16 @@ class ICMP9Checkin:
         self.email = email
         self.password = password
         self.page = None
-        # 初始化统计数据，默认值为0或未知
         self.stats = {
             "status": "未知",
-            "today_reward": "0 MB", # 今日奖励
-            "total_traffic": "0 GB", # 累计获得
-            "total_days": "0 天",    # 累计签到
-            "streak_days": "0 天"    # 连续签到
+            "today_reward": "0 MB", 
+            "total_traffic": "0 GB", 
+            "total_days": "0 天",    
+            "streak_days": "0 天"    
         }
         
     def init_browser(self):
-        """初始化浏览器 (Xvfb模式)"""
+        """初始化浏览器 (Xvfb模式兼容)"""
         co = ChromiumOptions()
         if os.getenv('GITHUB_ACTIONS'):
             co.set_browser_path('/usr/bin/google-chrome')
@@ -48,31 +51,42 @@ class ICMP9Checkin:
         self.page.set.timeouts(15)
 
     def handle_turnstile(self):
-        """处理 Cloudflare 验证"""
+        """
+        专门处理 Cloudflare 验证
+        会在 5 秒内尝试寻找并点击验证框
+        """
         try:
-            time.sleep(2)
-            iframe = self.page.get_frame('@src^https://challenges.cloudflare.com')
-            if iframe:
-                logger.info("检测到 Cloudflare 验证，尝试点击...")
-                btn = iframe.ele('tag:input') or iframe.ele('@type=checkbox') or iframe.ele('text=Verify you are human')
-                if btn:
-                    btn.click()
-                    time.sleep(3)
-                    return True
-        except:
-            pass
+            # 查找 Cloudflare iframe
+            # 这里的逻辑是：如果页面上有验证框，就点它；没有就跳过
+            start_time = time.time()
+            while time.time() - start_time < 5:
+                iframe = self.page.get_frame('@src^https://challenges.cloudflare.com')
+                if iframe:
+                    logger.info("检测到人机验证，正在尝试通过...")
+                    # 尝试点击 checkbox 或 body
+                    btn = iframe.ele('tag:input') or iframe.ele('@type=checkbox') or iframe.ele('text=Verify you are human')
+                    if btn:
+                        btn.click()
+                        time.sleep(2) # 点击后等待一下让CF反应
+                        logger.info("已点击验证框")
+                        return True
+                time.sleep(0.5)
+            return False
+        except Exception as e:
+            # 验证过程出错不应阻断流程，可能只是因为没有验证框
+            return False
 
     def login(self):
         """登录流程"""
         try:
             logger.info(f"[{self.email}] 打开登录页...")
-            self.page.get('https://icmp9.com/user/login')
-            self.handle_turnstile()
+            self.page.get('https://icmp9.com/auth/login')
+            self.handle_turnstile() # 登录页可能有验证
             
             # 输入账号
-            email_ele = self.page.ele('css:input[type="username"]') or self.page.ele('css:input[name="username"]')
+            email_ele = self.page.ele('css:input[type="email"]') or self.page.ele('css:input[name="email"]')
             if not email_ele:
-                logger.error("找不到邮箱输入框")
+                logger.error("找不到邮箱输入框，可能被拦截")
                 return False
                 
             email_ele.input(self.email)
@@ -81,7 +95,7 @@ class ICMP9Checkin:
             # 点击登录
             self.page.ele('css:button[type="submit"]').click()
             time.sleep(3)
-            self.handle_turnstile()
+            self.handle_turnstile() # 登录后跳转可能有验证
             
             # 验证登录
             if "dashboard" in self.page.url or "user" in self.page.url:
@@ -93,77 +107,127 @@ class ICMP9Checkin:
             return False
 
     def get_stat_value(self, label_text):
-        """根据标签文本抓取对应数值"""
+        """
+        根据标签文本(如'今日奖励')抓取数值
+        使用正则提取，防止提取到多余文字
+        """
         try:
-            # 找到包含特定文本(如"今日奖励")的元素
+            # 1. 定位标签
             label_ele = self.page.ele(f'text:{label_text}')
-            if label_ele:
-                # 向上找父级容器抓取整个卡片的文本
-                container = label_ele.parent(2)
-                full_text = container.text
-                
-                # 解析文本，提取数字部分
-                lines = full_text.split('\n')
-                for line in lines:
-                    line = line.strip()
-                    # 如果不是标签本身，且包含数字，则认为是数值
-                    if any(c.isdigit() for c in line) and label_text not in line:
-                        return line
-            return "获取失败"
+            if not label_ele: return "未找到"
+
+            # 2. 向上找容器 (Card)
+            container = label_ele.parent(2)
+            if not container: return "定位失败"
+
+            # 3. 清洗文本
+            full_text = container.text
+            text_without_label = full_text.replace(label_text, "").strip()
+            
+            # 4. 正则匹配 (数字 + 可选单位)
+            # 匹配示例: "5.06 GB", "10 天", "68.37"
+            pattern = r'(\d+(\.\d+)?\s*(GB|MB|KB|B|TB|天|Days?)?)'
+            match = re.search(pattern, text_without_label, re.IGNORECASE)
+            
+            if match:
+                return match.group(1).strip()
+            
+            # 保底策略
+            lines = text_without_label.split('\n')
+            for line in lines:
+                if any(c.isdigit() for c in line) and len(line) < 20:
+                    return line.strip()
+            return "提取失败"
         except:
             return "N/A"
 
     def checkin(self):
-        """签到主逻辑"""
+        """签到主流程"""
         try:
+            # 确保在 dashboard
             if "dashboard" not in self.page.url:
                 self.page.get("https://icmp9.com/dashboard")
+                time.sleep(3)
             
-            time.sleep(5) # 等待页面加载
+            # ==========================================
+            # 1. 点击侧边栏 [每日签到]
+            # ==========================================
+            logger.info("点击侧边栏 [每日签到]...")
+            sidebar_menu = self.page.ele('text=每日签到') or self.page.ele('@@text=每日签到')
+            
+            if sidebar_menu:
+                sidebar_menu.click()
+                time.sleep(3) # 等待右侧加载
+            else:
+                logger.warning("未找到侧边栏按钮，尝试直接寻找内容")
+
+            # ==========================================
+            # 2. 核心：处理人机验证 (情况1: 签到前验证)
+            # ==========================================
+            # 在判断按钮之前，先跑一次验证，防止验证框遮挡按钮或阻止加载
             self.handle_turnstile()
-            
-            # 关闭可能的公告弹窗
+
+            # 关闭可能的弹窗
             try:
                 close = self.page.ele('@aria-label=Close') or self.page.ele('.ant-modal-close')
                 if close: close.click()
             except: pass
+
+            # ==========================================
+            # 3. 判断按钮状态 (情况1 vs 情况2)
+            # ==========================================
+            logger.info("检查签到按钮状态...")
             
-            # 1. 处理签到按钮
-            logger.info("检查签到状态...")
+            # 查找大按钮
             btn = self.page.ele('text:签到') or self.page.ele('text:Check in') or self.page.ele('text:已签到')
             
+            status_text = "未知"
             if btn:
                 btn_text = btn.text
                 if "已" in btn_text:
-                    # 情况A: 已经签到过了
+                    # --- 情况2: 今日已签到 ---
                     self.stats["status"] = "今日已签到"
-                    logger.info("检测到：今日已签到")
+                    logger.info("状态：今日已签到，直接读取数据")
                 else:
-                    # 情况B: 还没签到，执行点击
-                    btn.click()
-                    time.sleep(3)
+                    # --- 情况1: 今日未签到 ---
+                    logger.info("状态：未签到，准备点击...")
+                    
+                    # 再次确保没有验证框遮挡
                     self.handle_turnstile()
-                    # 点击后再次检查，确认成功（防止点击无效）
+                    
+                    # 点击签到
+                    btn.click()
+                    time.sleep(3) # 等待结果弹窗或状态改变
+                    
+                    # 点击后可能还会出现验证
+                    self.handle_turnstile()
+                    
                     self.stats["status"] = "今日签到成功"
-                    logger.info("执行操作：签到成功")
+                    logger.info("操作：签到点击完成")
             else:
-                self.stats["status"] = "未找到按钮"
-                logger.warning("未找到签到按钮")
+                # 假如没有按钮，检查页面文字
+                if "已签到" in self.page.html:
+                    self.stats["status"] = "今日已签到"
+                else:
+                    self.stats["status"] = "未找到签到按钮"
+                    logger.warning("异常：未找到按钮")
 
-            # 2. 无论是否刚刚签到，都执行数据抓取
+            # ==========================================
+            # 4. 读取数据 (所有情况共用)
+            # ==========================================
             logger.info("正在抓取统计数据...")
-            time.sleep(2) # 给页面一点时间刷新数据
+            time.sleep(2) # 确保数据已刷新
             
             self.stats["today_reward"] = self.get_stat_value("今日奖励")
             self.stats["total_traffic"] = self.get_stat_value("累计获得")
             self.stats["total_days"] = self.get_stat_value("累计签到")
             self.stats["streak_days"] = self.get_stat_value("连续签到")
             
-            logger.info(f"数据抓取完毕: {self.stats}")
+            logger.info(f"抓取结果: {self.stats}")
             return True
 
         except Exception as e:
-            err_msg = f"出错: {str(e)[:30]}"
+            err_msg = f"出错: {str(e)[:50]}"
             self.stats["status"] = err_msg
             logger.error(err_msg)
             return False
@@ -207,37 +271,20 @@ class MultiAccountManager:
         msg += "-" * 25 + "\n"
         
         for email, success, stats in results:
-            # 隐藏部分邮箱
             mask_email = email.split('@')[0][:3] + "***@" + email.split('@')[1]
+            status_icon = "✅" if "已" in stats['status'] or "成功" in stats['status'] else "⚠️"
             
-            if success:
-                # 状态图标：如果是“已签到”或“成功”都显示绿色对勾
-                status_icon = "✅" if "已" in stats['status'] or "成功" in stats['status'] else "⚠️"
-                
-                msg += f"👤 <b>账号:</b> {mask_email}\n"
-                msg += f"{status_icon} <b>状态:</b> {stats['status']}\n"
-                msg += f"\n"
-                msg += f"🎁 <b>今日奖励:</b> {stats['today_reward']}\n"
-                msg += f"📊 <b>累计获得:</b> {stats['total_traffic']}\n"
-                msg += f"🗓 <b>累计签到:</b> {stats['total_days']}\n"
-                msg += f"🔥 <b>连续签到:</b> {stats['streak_days']}\n"
-            else:
-                msg += f"👤 <b>账号:</b> {mask_email}\n"
-                msg += f"❌ <b>失败:</b> {stats.get('status', '未知')}\n"
-            
+            msg += f"👤 <b>账号:</b> {mask_email}\n"
+            msg += f"{status_icon} <b>状态:</b> {stats['status']}\n"
+            msg += f"\n"
+            msg += f"🎁 <b>今日奖励:</b> {stats['today_reward']}\n"
+            msg += f"📊 <b>累计获得:</b> {stats['total_traffic']}\n"
+            msg += f"🗓 <b>累计签到:</b> {stats['total_days']}\n"
+            msg += f"🔥 <b>连续签到:</b> {stats['streak_days']}\n"
             msg += "-" * 25 + "\n"
 
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        payload = {
-            "chat_id": self.chat_id,
-            "text": msg,
-            "parse_mode": "HTML"
-        }
-        try:
-            requests.post(url, json=payload)
-            logger.info("Telegram 通知已发送")
-        except Exception as e:
-            logger.error(f"发送通知失败: {e}")
+        requests.post(url, json={"chat_id": self.chat_id, "text": msg, "parse_mode": "HTML"})
 
     def run_all(self):
         results = []
