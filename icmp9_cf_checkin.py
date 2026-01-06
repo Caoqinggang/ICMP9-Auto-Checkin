@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-ICMP9 DrissionPage 验证码攻坚版
-更新内容：
-1. 强化 Cloudflare 点击逻辑：显式点击 iframe body
-2. 登录失败重试机制：如果第一遍没过，重新点验证码再登录
-3. 增加 import requests 防止报错
+ICMP9 DrissionPage 鼠标模拟攻坚版
+更新重点：
+1. 修复人机验证：使用 page.actions 模拟真实鼠标移动和点击
+2. 增加坐标点击兜底策略
+3. 增加字体安装提示（解决方框乱码）
 """
 
 import os
 import time
 import logging
 import requests
+import random
 from datetime import datetime
 from DrissionPage import ChromiumPage, ChromiumOptions
 
@@ -36,7 +37,8 @@ class ICMP9Checkin:
         co.set_argument('--window-size=1920,1080')
         co.set_argument('--start-maximized')
         co.set_argument('--lang=zh-CN')
-        co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36')
+        # 伪装 User-Agent
+        co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
         
         self.page = ChromiumPage(co)
         self.page.set.timeouts(15)
@@ -53,49 +55,68 @@ class ICMP9Checkin:
 
     def solve_turnstile(self):
         """
-        强力处理 Cloudflare
-        策略：找到 iframe -> 点击中心 -> 等待变绿
+        [核心升级] 模拟真人鼠标处理 Cloudflare
         """
-        logger.info("正在处理人机验证...")
+        logger.info("🛡️ 开始处理人机验证 (鼠标模拟模式)...")
         start_time = time.time()
-        # 给足 20 秒处理验证码
-        while time.time() - start_time < 20:
+        
+        # 循环检测 25 秒
+        while time.time() - start_time < 25:
             try:
-                # 1. 查找包含 cloudflare 的 iframe
+                # 1. 定位 iframe
                 iframe_ele = self.page.ele('css:iframe[src*="cloudflare"]', timeout=2)
                 
                 if iframe_ele:
-                    # 获取 iframe 对象
-                    iframe = self.page.get_frame(iframe_ele)
-                    if iframe:
-                        # 尝试1：点击 body (最通用)
-                        iframe.ele('tag:body').click()
-                        time.sleep(0.5)
+                    # 获取 iframe 内部对象用于检查状态
+                    iframe_context = self.page.get_frame(iframe_ele)
+                    
+                    # 检查是否已经成功 (内部出现 Success 字样)
+                    if iframe_context and "Success" in iframe_context.html:
+                        logger.info("✅ 验证已通过！")
+                        return True
+                    
+                    # 2. 模拟鼠标移动并点击
+                    logger.info("🖱️ 鼠标移动到验证框中心并点击...")
+                    
+                    # 方法A: 使用动作链 (Actions) 模拟悬停后点击
+                    # 移动到元素中心，偏移一点点随机像素，看起来更像人
+                    offset_x = random.randint(-5, 5)
+                    offset_y = random.randint(-5, 5)
+                    
+                    self.page.actions.move_to(iframe_ele, offset_x=offset_x, offset_y=offset_y).wait(0.5).click()
+                    
+                    # 方法B: 如果动作链失败，尝试直接点击 iframe 内部 body
+                    if iframe_context:
+                        try:
+                            # 有时候点击 body 比点击 checkbox 更稳
+                            iframe_context.ele('tag:body').click()
+                        except: pass
+
+                    # 点击后等待 Cloudflare 反应
+                    time.sleep(3)
+                    
+                    # 再次检查是否成功
+                    if iframe_context and "Success" in iframe_context.html:
+                        logger.info("✅ 验证通过 (点击生效)")
+                        return True
                         
-                        # 尝试2：点击 checkbox (如果存在)
-                        cb = iframe.ele('@type=checkbox')
-                        if cb: cb.click()
-                        
-                        # 点击后，一定要等待它变绿（Cloudflare 处理需要时间）
-                        # 这里的等待非常关键，不能马上点登录
-                        if "Success" in iframe.html:
-                            logger.info("验证似乎已通过 (检测到 Success)")
-                            return True
-            except:
+            except Exception as e:
+                # logger.warning(f"验证尝试异常: {e}")
                 pass
+            
             time.sleep(1)
         
-        logger.info("验证等待超时 (但不代表失败，继续尝试登录)")
+        logger.warning("⚠️ 验证超时，未检测到通过信号 (尝试强行登录)")
         return True
 
     def login(self):
-        """登录逻辑 (带重试)"""
+        """登录逻辑"""
         try:
             logger.info(f"1. 访问登录页...")
             self.page.get(f"{self.base_url}/user/login")
-            time.sleep(3) # 等待页面完全加载
+            time.sleep(3)
             
-            # 2. 填写表单
+            # 2. 输入账号信息
             logger.info("2. 输入账号信息...")
             user_input = self.page.ele('#username') or self.page.ele('@name=username')
             if not user_input:
@@ -106,43 +127,39 @@ class ICMP9Checkin:
             user_input.input(self.email)
             self.page.ele('css:input[type="password"]').input(self.password)
             
-            # 3. 核心：处理验证码 + 点击登录 (循环尝试 3 次)
+            # 3. 攻克验证码 + 登录 (带重试)
             for attempt in range(1, 4):
-                logger.info(f"--- 登录尝试第 {attempt} 次 ---")
+                logger.info(f"--- 登录尝试第 {attempt}/3 次 ---")
                 
-                # A. 点击验证码
+                # 处理验证码
                 self.solve_turnstile()
                 
-                # B. 等待验证码生效
-                logger.info("等待验证码生效 (5秒)...")
-                time.sleep(5)
-                
-                # C. 点击登录按钮
-                logger.info("点击登录按钮...")
-                submit_btn = self.page.ele('css:button[type="submit"]') or self.page.ele('text:登录') or self.page.ele('.btn-primary')
+                # 点击登录
+                logger.info("点击 [立即登录]...")
+                # 寻找你截图中的蓝色按钮
+                submit_btn = self.page.ele('text:立即登录') or self.page.ele('css:button[type="submit"]') or self.page.ele('.btn-primary')
                 
                 if submit_btn:
-                    # 使用 JS 强制点击，防止按钮被透明层遮挡
+                    # 确保按钮不在 loading 状态
                     self.page.run_js('arguments[0].click()', submit_btn)
                 else:
                     logger.error("未找到登录按钮")
                 
-                # D. 等待跳转
                 logger.info("等待跳转 (10秒)...")
                 time.sleep(10)
                 
-                # E. 检查结果
+                # 检查结果
                 if "dashboard" in self.page.url:
                     logger.info("✅ 登录成功！")
                     return True
                 
-                # 如果没成功，截图看看为什么
-                logger.warning(f"第 {attempt} 次尝试未跳转，当前仍在: {self.page.url}")
+                # 失败截图
+                logger.warning(f"第 {attempt} 次失败，当前URL: {self.page.url}")
                 self.save_evidence(f"login_fail_{attempt}")
                 
-                # 刷新页面或继续尝试点击？这里选择直接重试点击流程
+                # 刷新页面重试？不，直接在当前页重点
             
-            logger.error("❌ 多次尝试登录失败")
+            logger.error("❌ 最终登录失败")
             return False
 
         except Exception as e:
@@ -188,7 +205,7 @@ class ICMP9Checkin:
 
             # 3. 点击按钮
             logger.info("寻找按钮 [#checkin-btn]...")
-            # 签到前可能还需要验证一次
+            # 签到前可能也需要过盾
             self.solve_turnstile()
             
             btn = None
