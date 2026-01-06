@@ -282,7 +282,7 @@ class MultiAccountManager:
                     try:
                         desc = shot_path.split('_', 1)[1].replace('.png', '')
                         # Caption: "lyc*** 签到状态截图"
-                        caption = f"{email.split('@')[0][:3]}*** {desc}"
+                        caption = f"ICMP9账号: {email.split('@')[0][:3]}*** {desc}"
                     except:
                         caption = "Checkin Screenshot"
                     
