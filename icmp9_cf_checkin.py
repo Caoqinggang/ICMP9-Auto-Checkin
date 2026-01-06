@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-ICMP9 DrissionPage 自动签到脚本 (ID精准定位版)
-更新内容：
-1. 按钮定位：直接使用 #checkin-btn
-2. 状态判断：通过 disabled 属性和文本判断
-3. 数据抓取：直接读取 #today-reward 等 ID，无需正则
-4. 单位补全：根据描述自动追加 GB 或 天
+ICMP9 DrissionPage 自动签到脚本 (源码精准适配版)
+逻辑更新：
+1. 导航定位：精准点击 <a class="nav-item" data-section="checkin">
+2. 签到定位：精准操作 <button id="checkin-btn">
+3. 状态判断：检测 button 的 disabled 属性和文本
+4. 数据抓取：使用 ID 精准提取
 """
 
 import os
 import time
 import logging
 import requests
-import re
 from datetime import datetime
 from DrissionPage import ChromiumPage, ChromiumOptions
 
@@ -42,12 +41,14 @@ class ICMP9Checkin:
         
         co.set_argument('--no-sandbox')
         co.set_argument('--disable-gpu')
+        # 强制大窗口
         co.set_argument('--window-size=1920,1080') 
         co.set_argument('--start-maximized')
         co.set_argument('--lang=zh-CN') 
         co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
         self.page = ChromiumPage(co)
+        # 设置默认查找超时
         self.page.set.timeouts(10)
 
     def handle_turnstile(self):
@@ -59,7 +60,7 @@ class ICMP9Checkin:
                 if iframe:
                     btn = iframe.ele('tag:input') or iframe.ele('@type=checkbox') or iframe.ele('text=Verify you are human')
                     if btn:
-                        logger.info("检测到验证框，正在点击...")
+                        logger.info("检测到验证框，点击...")
                         btn.click()
                         time.sleep(3)
                         return True
@@ -77,7 +78,7 @@ class ICMP9Checkin:
             self.handle_turnstile()
             
             logger.info("2. 输入账号密码...")
-            email_ele = self.page.ele('css:input[type="email"]') or self.page.ele('css:input[name="email"]') or self.page.ele('@placeholder:邮箱')
+            email_ele = self.page.ele('css:input[type="email"]') or self.page.ele('@placeholder:邮箱')
             
             if not email_ele:
                 logger.error("找不到邮箱输入框")
@@ -105,12 +106,9 @@ class ICMP9Checkin:
     def get_id_text(self, ele_id, unit=""):
         """通过ID直接获取数值并拼接单位"""
         try:
-            # 直接使用 #id 选择器
             ele = self.page.ele(f'#{ele_id}')
             if ele:
-                # 获取纯数值，去除空格
                 val = ele.text.strip()
-                # 拼接单位
                 return f"{val} {unit}"
             return "未找到"
         except:
@@ -123,89 +121,100 @@ class ICMP9Checkin:
                 self.page.get(f"{self.base_url}/user/dashboard")
                 time.sleep(5)
 
-            # 1. 处理公告弹窗
+            # 1. 关闭可能的弹窗
             try:
-                pop_btn = self.page.ele('text:我知道了') or self.page.ele('.ant-modal-close') or self.page.ele('@aria-label=Close')
-                if pop_btn:
-                    logger.info("关闭公告弹窗...")
-                    pop_btn.click()
-                    time.sleep(1)
+                pop_btn = self.page.ele('text:我知道了') or self.page.ele('.ant-modal-close')
+                if pop_btn: pop_btn.click()
             except: pass
 
-            # 2. 点击侧边栏 [每日签到] 以加载数据和按钮
-            logger.info("4. 寻找 [每日签到] 侧边栏...")
-            sidebar = None
-            end_time = time.time() + 10
-            while time.time() < end_time:
-                sidebar = self.page.ele('x://a[contains(., "每日签到")]')
-                if not sidebar: sidebar = self.page.ele('@data-section=checkin')
-                if sidebar: break
-                time.sleep(1)
+            # ==========================================
+            # 2. 点击导航栏 (nav-item)
+            # 对应代码: <a href="#" class="nav-item" data-section="checkin">
+            # ==========================================
+            logger.info("4. 寻找导航菜单 [每日签到]...")
             
-            # 移动端兼容
-            if not sidebar:
+            # 使用 CSS 选择器精确定位
+            # 查找带有 data-section="checkin" 属性的 a 标签
+            nav_item = self.page.ele('css:a[data-section="checkin"]')
+            
+            if not nav_item:
+                # 备用：尝试只用属性查找
+                nav_item = self.page.ele('@data-section=checkin')
+
+            if nav_item:
+                logger.info(">>> 点击导航菜单: 每日签到 <<<")
+                try:
+                    nav_item.click()
+                except:
+                    # 如果被遮挡，使用JS点击
+                    self.page.run_js('arguments[0].click()', nav_item)
+                
+                # 点击后等待右侧内容区域加载出按钮
+                time.sleep(3)
+            else:
+                logger.error("!!! 无法找到导航菜单 [data-section='checkin'] !!!")
+                # 尝试点击移动端菜单后再找一次
                 menu_btn = self.page.ele('.navbar-toggler') or self.page.ele('button[class*="toggle"]')
                 if menu_btn:
+                    logger.info("尝试点击移动端菜单...")
                     menu_btn.click()
                     time.sleep(1)
-                    sidebar = self.page.ele('x://a[contains(., "每日签到")]')
+                    nav_item = self.page.ele('css:a[data-section="checkin"]')
+                    if nav_item: nav_item.click()
 
-            if sidebar:
-                logger.info(">>> 点击侧边栏 <<<")
-                try: sidebar.click()
-                except: self.page.run_js('arguments[0].click()', sidebar)
-                time.sleep(3) # 等待数据加载
-            else:
-                logger.error("!!! 无法找到侧边栏，尝试直接查找 ID !!!")
-
-            # 3. 核心：基于 ID 处理签到按钮
-            # 按钮 ID: checkin-btn
+            # ==========================================
+            # 3. 操作签到按钮
+            # 对应代码: <button id="checkin-btn" ...>
+            # ==========================================
+            logger.info("5. 寻找签到按钮 [#checkin-btn]...")
             self.handle_turnstile()
 
-            logger.info("检查签到按钮 (#checkin-btn)...")
-            btn = self.page.ele('#checkin-btn')
+            # 尝试查找 ID 为 checkin-btn 的元素
+            # 这里的逻辑是：点击导航后，这个按钮应该出现在页面上
+            checkin_btn = None
             
-            if btn:
-                # 检查是否已签到：
-                # 1. 文本包含 "已"
-                # 2. 存在 disabled 属性
-                is_disabled = btn.attr('disabled') is not None
-                btn_text = btn.text
+            # 简单的重试机制，防止点击导航后加载慢
+            for _ in range(5):
+                checkin_btn = self.page.ele('#checkin-btn')
+                if checkin_btn: break
+                time.sleep(1)
+            
+            if checkin_btn:
+                # 获取按钮文本和 disabled 属性
+                btn_text = checkin_btn.text
+                is_disabled = checkin_btn.attr('disabled') is not None
                 
                 if "已" in btn_text or is_disabled:
+                    # 情况：今日已签到
                     self.stats["status"] = "今日已签到"
-                    logger.info(f"状态：已签到 (文本:{btn_text}, Disabled:{is_disabled})")
+                    logger.info(f"状态：已签到 (文本: {btn_text})")
                 else:
+                    # 情况：未签到
                     logger.info("状态：未签到，执行点击...")
-                    self.handle_turnstile()
+                    self.handle_turnstile() # 点击前最后一次检查验证
                     
-                    btn.click()
-                    time.sleep(3) # 等待结果刷新
+                    checkin_btn.click()
+                    time.sleep(3) # 等待结果
                     self.handle_turnstile()
                     
                     self.stats["status"] = "今日签到成功"
                     logger.info("签到动作完成")
             else:
-                # 假如页面还没加载出来，或者ID变了
+                # 假如页面还没加载出来
                 if "已签到" in self.page.html:
                     self.stats["status"] = "今日已签到 (无按钮)"
                 else:
                     self.stats["status"] = "异常：未找到 #checkin-btn"
 
-            # 4. 数据读取 - 基于具体 ID
-            logger.info("读取统计数据...")
+            # ==========================================
+            # 4. 数据读取 (ID 定位)
+            # ==========================================
+            logger.info("6. 读取统计数据...")
             time.sleep(2)
             
-            # 今日奖励: id="today-reward", 单位 GB
             self.stats["today_reward"] = self.get_id_text("today-reward", "GB")
-            
-            # 累计获得: id="total-checkin-traffic", 单位 GB
             self.stats["total_traffic"] = self.get_id_text("total-checkin-traffic", "GB")
-            
-            # 累计签到: id="total-checkins", 单位 天
             self.stats["total_days"] = self.get_id_text("total-checkins", "天")
-            
-            # 连续签到: id="continuous-days", 单位 天
             self.stats["streak_days"] = self.get_id_text("continuous-days", "天")
             
             logger.info(f"数据读取完毕: {self.stats}")
