@@ -1,9 +1,3 @@
-这份 `README.md` 文档是专门为你最终完善的 **ICMP9 自动签到脚本** 设计的。它详细说明了项目功能、配置方法（特别是 GitHub Actions Secrets）以及运行效果。
-
-请在你的仓库根目录下创建一个名为 `README.md` 的文件，并将以下内容复制进去。
-
----
-
 # ✈️ ICMP9 自动签到脚本 (DrissionPage 版)
 
 这是一个基于 Python 和 [DrissionPage](https://github.com/g1879/DrissionPage) 开发的 ICMP9 面板自动签到脚本。专门针对 **Cloudflare Turnstile (5秒盾)** 进行优化，能够在 GitHub Actions 环境下稳定运行，并发送包含**现场截图**和**详细数据**的 Telegram 通知。
