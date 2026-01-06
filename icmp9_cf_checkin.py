@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-ICMP9 DrissionPage 自动签到脚本 (源码精准适配版)
-逻辑更新：
-1. 导航定位：精准点击 <a class="nav-item" data-section="checkin">
-2. 签到定位：精准操作 <button id="checkin-btn">
-3. 状态判断：检测 button 的 disabled 属性和文本
-4. 数据抓取：使用 ID 精准提取
+ICMP9 DrissionPage 自动签到脚本 (弹窗完美修复版)
+更新内容：
+1. 登录后优先循环检测并关闭“我知道了”弹窗
+2. 精准定位侧边栏 <a data-section="checkin">
+3. 精准操作签到按钮 #checkin-btn
+4. 精准提取 ID 数据
 """
 
 import os
@@ -41,14 +41,12 @@ class ICMP9Checkin:
         
         co.set_argument('--no-sandbox')
         co.set_argument('--disable-gpu')
-        # 强制大窗口
         co.set_argument('--window-size=1920,1080') 
         co.set_argument('--start-maximized')
         co.set_argument('--lang=zh-CN') 
         co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
         self.page = ChromiumPage(co)
-        # 设置默认查找超时
         self.page.set.timeouts(10)
 
     def handle_turnstile(self):
@@ -121,24 +119,42 @@ class ICMP9Checkin:
                 self.page.get(f"{self.base_url}/user/dashboard")
                 time.sleep(5)
 
-            # 1. 关闭可能的弹窗
-            try:
-                pop_btn = self.page.ele('text:我知道了') or self.page.ele('.ant-modal-close')
-                if pop_btn: pop_btn.click()
-            except: pass
+            # ==========================================
+            # 1. 优先处理弹窗 (新增重点)
+            # ==========================================
+            logger.info("4. 检查 [欢迎来到ICMP9] 弹窗...")
+            
+            # 循环检测几秒，防止弹窗有动画延迟
+            for _ in range(5):
+                # 精准匹配按钮文字 "我知道了"
+                pop_btn = self.page.ele('text=我知道了')
+                
+                # 备用：右上角关闭图标
+                if not pop_btn:
+                    pop_btn = self.page.ele('@aria-label=Close') or self.page.ele('.ant-modal-close')
+                
+                if pop_btn:
+                    logger.info(">>> 发现弹窗，点击 [我知道了] <<<")
+                    try:
+                        pop_btn.click()
+                    except:
+                        # 强制JS点击
+                        self.page.run_js('arguments[0].click()', pop_btn)
+                    
+                    # 关键：点击后必须等待遮罩层消失，否则无法点击下面的菜单
+                    time.sleep(2)
+                    break
+                time.sleep(1)
 
             # ==========================================
             # 2. 点击导航栏 (nav-item)
-            # 对应代码: <a href="#" class="nav-item" data-section="checkin">
             # ==========================================
-            logger.info("4. 寻找导航菜单 [每日签到]...")
+            logger.info("5. 寻找导航菜单 [每日签到]...")
             
             # 使用 CSS 选择器精确定位
-            # 查找带有 data-section="checkin" 属性的 a 标签
             nav_item = self.page.ele('css:a[data-section="checkin"]')
             
             if not nav_item:
-                # 备用：尝试只用属性查找
                 nav_item = self.page.ele('@data-section=checkin')
 
             if nav_item:
@@ -146,14 +162,11 @@ class ICMP9Checkin:
                 try:
                     nav_item.click()
                 except:
-                    # 如果被遮挡，使用JS点击
                     self.page.run_js('arguments[0].click()', nav_item)
-                
-                # 点击后等待右侧内容区域加载出按钮
                 time.sleep(3)
             else:
                 logger.error("!!! 无法找到导航菜单 [data-section='checkin'] !!!")
-                # 尝试点击移动端菜单后再找一次
+                # 尝试点击移动端菜单
                 menu_btn = self.page.ele('.navbar-toggler') or self.page.ele('button[class*="toggle"]')
                 if menu_btn:
                     logger.info("尝试点击移动端菜单...")
@@ -163,44 +176,36 @@ class ICMP9Checkin:
                     if nav_item: nav_item.click()
 
             # ==========================================
-            # 3. 操作签到按钮
-            # 对应代码: <button id="checkin-btn" ...>
+            # 3. 操作签到按钮 #checkin-btn
             # ==========================================
-            logger.info("5. 寻找签到按钮 [#checkin-btn]...")
+            logger.info("6. 寻找签到按钮 [#checkin-btn]...")
             self.handle_turnstile()
 
-            # 尝试查找 ID 为 checkin-btn 的元素
-            # 这里的逻辑是：点击导航后，这个按钮应该出现在页面上
+            # 简单的重试机制
             checkin_btn = None
-            
-            # 简单的重试机制，防止点击导航后加载慢
             for _ in range(5):
                 checkin_btn = self.page.ele('#checkin-btn')
                 if checkin_btn: break
                 time.sleep(1)
             
             if checkin_btn:
-                # 获取按钮文本和 disabled 属性
                 btn_text = checkin_btn.text
                 is_disabled = checkin_btn.attr('disabled') is not None
                 
                 if "已" in btn_text or is_disabled:
-                    # 情况：今日已签到
                     self.stats["status"] = "今日已签到"
                     logger.info(f"状态：已签到 (文本: {btn_text})")
                 else:
-                    # 情况：未签到
                     logger.info("状态：未签到，执行点击...")
-                    self.handle_turnstile() # 点击前最后一次检查验证
+                    self.handle_turnstile()
                     
                     checkin_btn.click()
-                    time.sleep(3) # 等待结果
+                    time.sleep(3)
                     self.handle_turnstile()
                     
                     self.stats["status"] = "今日签到成功"
                     logger.info("签到动作完成")
             else:
-                # 假如页面还没加载出来
                 if "已签到" in self.page.html:
                     self.stats["status"] = "今日已签到 (无按钮)"
                 else:
@@ -209,7 +214,7 @@ class ICMP9Checkin:
             # ==========================================
             # 4. 数据读取 (ID 定位)
             # ==========================================
-            logger.info("6. 读取统计数据...")
+            logger.info("7. 读取统计数据...")
             time.sleep(2)
             
             self.stats["today_reward"] = self.get_id_text("today-reward", "GB")
