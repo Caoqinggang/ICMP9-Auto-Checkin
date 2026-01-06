@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-ICMP9 强力调试版脚本
+ICMP9 强力调试版脚本 (修复语法错误版)
 功能：
-1. 失败时自动截图 + 保存HTML源码 (方便排查)
-2. 打印当前页面所有可见文本，确认是否被 Cloudflare 拦截
-3. 使用 JS 暴力移除遮罩层，防止点击被拦截
+1. 失败时自动截图 + 保存HTML源码
+2. 打印当前页面所有可见文本
+3. 使用 JS 暴力移除遮罩层
 """
 
 import os
 import time
 import logging
+import requests
 from datetime import datetime
 from DrissionPage import ChromiumPage, ChromiumOptions
 
@@ -59,9 +60,10 @@ class ICMP9Checkin:
             logger.info(f"当前页面标题: {self.page.title}")
             logger.info(f"当前页面URL: {self.page.url}")
             
-            # 打印部分文本内容，看看是不是被CF拦截了
-            body_text = self.page.ele('tag:body').text[:500].replace('\n', ' ')
-            logger.info(f"页面头部文本: {body_text}")
+            # 打印部分文本内容
+            raw_text = self.page.ele('tag:body').text[:500]
+            clean_text = raw_text.replace('\n', ' ')
+            logger.info(f"页面头部文本: {clean_text}")
             
         except Exception as e:
             logger.error(f"保存调试信息失败: {e}")
@@ -101,7 +103,7 @@ class ICMP9Checkin:
             btn = self.page.ele('css:button[type="submit"]') or self.page.ele('text:登录')
             if btn: btn.click()
             
-            time.sleep(5)
+            time.sleep(8) # 增加等待时间
             self.handle_turnstile()
             
             if "dashboard" in self.page.url or "user" in self.page.url:
@@ -119,7 +121,7 @@ class ICMP9Checkin:
         try:
             if "dashboard" not in self.page.url:
                 self.page.get(f"{self.base_url}/user/dashboard")
-                time.sleep(8) # 增加等待时间，防止白屏
+                time.sleep(8) 
 
             # ==========================================
             # 1. 暴力处理弹窗 (JS 移除遮罩)
@@ -133,7 +135,7 @@ class ICMP9Checkin:
                     pop_btn.click()
                     time.sleep(2)
                 
-                # 【大招】直接运行JS移除常见的遮罩层，防止挡住点击
+                # JS 暴力移除遮罩
                 js_remove_mask = """
                 var masks = document.querySelectorAll('.ant-modal-mask, .ant-modal-wrap, .modal-backdrop');
                 masks.forEach(m => m.remove());
@@ -150,24 +152,18 @@ class ICMP9Checkin:
             # ==========================================
             logger.info("5. 寻找导航菜单 [每日签到]...")
             
-            # 打印当前页面所有的链接文本，帮我确认页面到底加载了什么
-            # links = self.page.eles('tag:a')
-            # logger.info(f"页面上发现 {len(links)} 个链接")
-            
-            # 尝试多种定位方式
             nav_item = None
             
-            # 方式A: 精确 CSS (你提供的代码)
+            # 方式A: 精确 CSS
             nav_item = self.page.ele('css:a.nav-item[data-section="checkin"]')
             
             # 方式B: 只用 data-section
             if not nav_item:
                 nav_item = self.page.ele('@data-section=checkin')
                 
-            # 方式C: 寻找包含 SVG 的那个链接 (根据你的HTML结构)
+            # 方式C: 寻找包含 SVG 的那个链接
             if not nav_item:
                 logger.info("尝试通过 SVG 结构查找...")
-                # 找包含 '每日签到' 文本的 nav-item 类
                 nav_items = self.page.eles('.nav-item')
                 for item in nav_items:
                     if "每日签到" in item.text:
@@ -176,19 +172,19 @@ class ICMP9Checkin:
 
             if nav_item:
                 logger.info(f">>> 找到导航菜单，文本: {nav_item.text.strip()} <<<")
-                # 强制 JS 点击，无视遮挡
                 self.page.run_js('arguments[0].click()', nav_item)
                 time.sleep(5)
             else:
                 logger.error("!!! 无法找到导航菜单 !!!")
-                # 截图保存现场
                 self.save_debug_info("nav_missing")
                 
-                # 尝试直接打印所有 nav-item 的内容，看看有没有类似的
                 logger.info("列出页面上所有 .nav-item 的内容:")
                 items = self.page.eles('.nav-item')
                 for i, item in enumerate(items):
-                    logger.info(f"Item {i}: {item.text.replace('\n', ' ')} | HTML: {item.outer_html[:50]}")
+                    # 修复：将 replace 操作移出 f-string
+                    clean_text = item.text.replace('\n', ' ')
+                    clean_html = item.outer_html[:50]
+                    logger.info(f"Item {i}: {clean_text} | HTML: {clean_html}")
                 return False
 
             # ==========================================
@@ -199,7 +195,6 @@ class ICMP9Checkin:
             
             btn = self.page.ele('#checkin-btn')
             if not btn:
-                # 尝试等待一下
                 time.sleep(3)
                 btn = self.page.ele('#checkin-btn')
 
@@ -212,14 +207,12 @@ class ICMP9Checkin:
                     self.stats["status"] = "今日已签到"
                 else:
                     logger.info("点击签到...")
-                    # 强制 JS 点击
                     self.page.run_js('arguments[0].click()', btn)
                     time.sleep(5)
                     self.stats["status"] = "今日签到成功"
             else:
                 logger.error("未找到 #checkin-btn")
                 self.save_debug_info("btn_missing")
-                # 即使没找到按钮，也尝试读数据，万一已经显示了呢
 
             # ==========================================
             # 4. 读取数据
@@ -252,7 +245,6 @@ class ICMP9Checkin:
         finally:
             self.page.quit()
 
-# ... (MultiAccountManager 类保持不变) ...
 class MultiAccountManager:
     def __init__(self):
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
