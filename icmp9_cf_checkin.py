@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-ICMP9 DrissionPage 自动签到脚本 (最终修复版)
-修复内容：
-1. 修复 'ChromiumPageWaiter' 报错，改用手动 while 循环等待
-2. 保持 XPath 强力定位策略
-3. 增加对移动端折叠菜单的兼容处理
+ICMP9 DrissionPage 自动签到脚本 (ID精准定位版)
+更新内容：
+1. 按钮定位：直接使用 #checkin-btn
+2. 状态判断：通过 disabled 属性和文本判断
+3. 数据抓取：直接读取 #today-reward 等 ID，无需正则
+4. 单位补全：根据描述自动追加 GB 或 天
 """
 
 import os
@@ -27,7 +28,7 @@ class ICMP9Checkin:
         self.base_url = "https://icmp9.com"
         self.stats = {
             "status": "未知",
-            "today_reward": "0 MB", 
+            "today_reward": "0 GB", 
             "total_traffic": "0 GB", 
             "total_days": "0 天",    
             "streak_days": "0 天"    
@@ -41,7 +42,6 @@ class ICMP9Checkin:
         
         co.set_argument('--no-sandbox')
         co.set_argument('--disable-gpu')
-        # 强制大窗口，减少移动端样式出现的概率
         co.set_argument('--window-size=1920,1080') 
         co.set_argument('--start-maximized')
         co.set_argument('--lang=zh-CN') 
@@ -77,9 +77,7 @@ class ICMP9Checkin:
             self.handle_turnstile()
             
             logger.info("2. 输入账号密码...")
-            email_ele = self.page.ele('css:input[type="email"]') or self.page.ele('css:input[name="email"]')
-            if not email_ele:
-                email_ele = self.page.ele('@placeholder:邮箱')
+            email_ele = self.page.ele('css:input[type="email"]') or self.page.ele('css:input[name="email"]') or self.page.ele('@placeholder:邮箱')
             
             if not email_ele:
                 logger.error("找不到邮箱输入框")
@@ -91,7 +89,7 @@ class ICMP9Checkin:
             login_btn = self.page.ele('css:button[type="submit"]') or self.page.ele('text:登录')
             if login_btn: login_btn.click()
             
-            time.sleep(5) # 等待跳转
+            time.sleep(5) 
             self.handle_turnstile()
             
             if "dashboard" in self.page.url or "user" in self.page.url:
@@ -104,29 +102,17 @@ class ICMP9Checkin:
             logger.error(f"登录异常: {e}")
             return False
 
-    def get_stat_value(self, label_text):
-        """数据抓取逻辑"""
+    def get_id_text(self, ele_id, unit=""):
+        """通过ID直接获取数值并拼接单位"""
         try:
-            label_ele = self.page.ele(f'text:{label_text}')
-            if not label_ele: return "未找到标签"
-
-            target_text = ""
-            container = label_ele
-            for _ in range(4): 
-                container = container.parent()
-                if not container: break
-                text = container.text
-                clean_text = text.replace(label_text, "").strip()
-                if any(char.isdigit() for char in clean_text):
-                    target_text = clean_text
-                    break
-            
-            if not target_text: return "未找到数值"
-
-            pattern = r'(\d+(\.\d+)?\s*(GB|MB|KB|B|TB|天|Days?)?)'
-            match = re.search(pattern, target_text, re.IGNORECASE)
-            if match: return match.group(1).strip()
-            return "格式不匹配"
+            # 直接使用 #id 选择器
+            ele = self.page.ele(f'#{ele_id}')
+            if ele:
+                # 获取纯数值，去除空格
+                val = ele.text.strip()
+                # 拼接单位
+                return f"{val} {unit}"
+            return "未找到"
         except:
             return "N/A"
 
@@ -137,105 +123,90 @@ class ICMP9Checkin:
                 self.page.get(f"{self.base_url}/user/dashboard")
                 time.sleep(5)
 
-            # ==========================================
-            # 4. 寻找 [每日签到] (手动循环等待)
-            # ==========================================
-            logger.info("4. 寻找 [每日签到] 按钮...")
-            
+            # 1. 处理公告弹窗
+            try:
+                pop_btn = self.page.ele('text:我知道了') or self.page.ele('.ant-modal-close') or self.page.ele('@aria-label=Close')
+                if pop_btn:
+                    logger.info("关闭公告弹窗...")
+                    pop_btn.click()
+                    time.sleep(1)
+            except: pass
+
+            # 2. 点击侧边栏 [每日签到] 以加载数据和按钮
+            logger.info("4. 寻找 [每日签到] 侧边栏...")
             sidebar = None
-            
-            # 手动实现等待循环，尝试 10 秒
             end_time = time.time() + 10
             while time.time() < end_time:
-                # 策略A: XPath 强力匹配 (包含文本的 <a> 标签)
-                # 忽略空格和层级，最稳
                 sidebar = self.page.ele('x://a[contains(., "每日签到")]')
-                
-                # 策略B: 属性匹配
-                if not sidebar:
-                    sidebar = self.page.ele('@data-section=checkin')
-                
-                # 策略C: 模糊文本
-                if not sidebar:
-                    sidebar = self.page.ele('text:每日签到')
-                
-                if sidebar:
-                    break
+                if not sidebar: sidebar = self.page.ele('@data-section=checkin')
+                if sidebar: break
                 time.sleep(1)
             
-            # 如果还没找到，尝试点击移动端汉堡菜单 (以防万一)
+            # 移动端兼容
             if not sidebar:
-                logger.warning("常规寻找失败，尝试查找移动端菜单按钮...")
-                # 常见的移动端菜单按钮 class
-                menu_btn = self.page.ele('.navbar-toggler') or self.page.ele('button[class*="toggle"]') or self.page.ele('.mobile-menu-btn')
-                
+                menu_btn = self.page.ele('.navbar-toggler') or self.page.ele('button[class*="toggle"]')
                 if menu_btn:
-                    logger.info("点击移动端菜单按钮...")
                     menu_btn.click()
-                    time.sleep(2)
-                    # 再次尝试寻找
+                    time.sleep(1)
                     sidebar = self.page.ele('x://a[contains(., "每日签到")]')
 
             if sidebar:
-                logger.info(">>> 找到侧边栏按钮，点击 <<<")
-                try:
-                    sidebar.click()
-                except:
-                    # 如果元素被遮挡，使用JS强制点击
-                    self.page.run_js('arguments[0].click()', sidebar)
-                    
-                time.sleep(5) # 等待右侧加载
+                logger.info(">>> 点击侧边栏 <<<")
+                try: sidebar.click()
+                except: self.page.run_js('arguments[0].click()', sidebar)
+                time.sleep(3) # 等待数据加载
             else:
-                logger.error("!!! 无法找到侧边栏按钮 !!!")
-                logger.info("调试: 打印页面HTML片段:")
-                logger.info(self.page.html[:1500])
-                # 不直接退出，尝试检查是否已经停留在签到页面(URL包含checkin?)或者直接找签到按钮
-                
-            # ==========================================
-            # 逻辑分支
-            # ==========================================
+                logger.error("!!! 无法找到侧边栏，尝试直接查找 ID !!!")
+
+            # 3. 核心：基于 ID 处理签到按钮
+            # 按钮 ID: checkin-btn
             self.handle_turnstile()
 
-            try:
-                close = self.page.ele('@aria-label=Close') or self.page.ele('.ant-modal-close')
-                if close: close.click()
-            except: pass
-
-            logger.info("检查签到按钮状态...")
-            action_btn = self.page.ele('text:签到') or self.page.ele('text:Check in') or self.page.ele('text:已签到')
+            logger.info("检查签到按钮 (#checkin-btn)...")
+            btn = self.page.ele('#checkin-btn')
             
-            if action_btn:
-                btn_text = action_btn.text
-                if "已" in btn_text:
+            if btn:
+                # 检查是否已签到：
+                # 1. 文本包含 "已"
+                # 2. 存在 disabled 属性
+                is_disabled = btn.attr('disabled') is not None
+                btn_text = btn.text
+                
+                if "已" in btn_text or is_disabled:
                     self.stats["status"] = "今日已签到"
-                    logger.info("状态：检测到今日已签到")
+                    logger.info(f"状态：已签到 (文本:{btn_text}, Disabled:{is_disabled})")
                 else:
-                    logger.info("状态：未签到，开始签到流程")
+                    logger.info("状态：未签到，执行点击...")
                     self.handle_turnstile()
                     
-                    logger.info("点击 [签到] 按钮...")
-                    action_btn.click()
-                    time.sleep(5)
+                    btn.click()
+                    time.sleep(3) # 等待结果刷新
                     self.handle_turnstile()
                     
                     self.stats["status"] = "今日签到成功"
                     logger.info("签到动作完成")
             else:
+                # 假如页面还没加载出来，或者ID变了
                 if "已签到" in self.page.html:
                     self.stats["status"] = "今日已签到 (无按钮)"
                 else:
-                    self.stats["status"] = "异常：未找到签到按钮"
+                    self.stats["status"] = "异常：未找到 #checkin-btn"
 
-            # ==========================================
-            # 数据读取
-            # ==========================================
-            logger.info("开始读取数据...")
+            # 4. 数据读取 - 基于具体 ID
+            logger.info("读取统计数据...")
             time.sleep(2)
             
-            self.stats["today_reward"] = self.get_stat_value("今日奖励")
-            self.stats["total_traffic"] = self.get_stat_value("累计获得")
-            self.stats["total_days"] = self.get_stat_value("累计签到")
-            self.stats["streak_days"] = self.get_stat_value("连续签到")
+            # 今日奖励: id="today-reward", 单位 GB
+            self.stats["today_reward"] = self.get_id_text("today-reward", "GB")
+            
+            # 累计获得: id="total-checkin-traffic", 单位 GB
+            self.stats["total_traffic"] = self.get_id_text("total-checkin-traffic", "GB")
+            
+            # 累计签到: id="total-checkins", 单位 天
+            self.stats["total_days"] = self.get_id_text("total-checkins", "天")
+            
+            # 连续签到: id="continuous-days", 单位 天
+            self.stats["streak_days"] = self.get_id_text("continuous-days", "天")
             
             logger.info(f"数据读取完毕: {self.stats}")
             return True
