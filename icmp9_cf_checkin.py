@@ -80,11 +80,11 @@ class ICMP9Checkin:
         """登录流程"""
         try:
             logger.info(f"[{self.email}] 打开登录页...")
-            self.page.get('https://icmp9.com/auth/login')
+            self.page.get('https://icmp9.com/user')
             self.handle_turnstile() # 登录页可能有验证
             
             # 输入账号
-            email_ele = self.page.ele('css:input[type="email"]') or self.page.ele('css:input[name="email"]')
+            email_ele = self.page.ele('css:input[type="username"]') or self.page.ele('css:input[name="username"]')
             if not email_ele:
                 logger.error("找不到邮箱输入框，可能被拦截")
                 return False
