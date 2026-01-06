@@ -1,10 +1,8 @@
 name: ICMP9 Auto Checkin
 
 on:
-  # 计划任务：每天北京时间 10:00 运行 (UTC时间 02:00)
   schedule:
     - cron: '0 2 * * *'
-  # 允许手动触发
   workflow_dispatch:
 
 jobs:
@@ -12,32 +10,26 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    # 1. 检出代码
     - name: Checkout code
       uses: actions/checkout@v4
       
-    # 2. 设置 Python 环境
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
         
-    # 3. 安装 Python 依赖
     - name: Install dependencies
       run: |
         pip install DrissionPage requests
         
-    # 4. 安装 Chrome 浏览器和 Xvfb (虚拟显示服务)
-    # DrissionPage 需要 Chrome，Xvfb 用于欺骗 Cloudflare 认为有显示器
-    - name: Install Chrome and Xvfb
+    # ▼▼▼ 新增：安装中文字体，解决截图乱码问题 ▼▼▼
+    - name: Install Chinese Fonts
       run: |
         sudo apt-get update
-        sudo apt-get install -y google-chrome-stable xvfb
+        sudo apt-get install -y fonts-noto-cjk fonts-noto-cjk-extra google-chrome-stable xvfb
         
-    # 5. 运行签到脚本 (使用 xvfb-run 启动)
     - name: Run Checkin with Xvfb
       env:
-        # 引用 GitHub Secrets 中的变量
         ICMP9_EMAIL: ${{ secrets.ICMP9_EMAIL }}
         ICMP9_PASSWORD: ${{ secrets.ICMP9_PASSWORD }}
         ICMP9_ACCOUNTS: ${{ secrets.ICMP9_ACCOUNTS }}
@@ -45,12 +37,8 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         GITHUB_ACTIONS: true
       run: |
-        # 模拟分辨率 1920x1080x24色深
         xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python icmp9_cf_checkin.py
         
-    # 6. 上传调试截图和源码 (非常重要)
-    # 无论脚本成功还是失败，都会执行这一步
-    # 你可以在 Actions 运行记录的 Artifacts 区域下载到这些文件
     - name: Upload Debug Screenshots
       if: always()
       uses: actions/upload-artifact@v4
