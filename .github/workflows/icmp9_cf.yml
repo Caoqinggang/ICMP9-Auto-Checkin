@@ -22,11 +22,11 @@ jobs:
       run: |
         pip install DrissionPage requests
         
-    # ▼▼▼ 新增：安装中文字体，解决截图乱码问题 ▼▼▼
-    - name: Install Chinese Fonts
+    # 安装中文字体和 Chrome
+    - name: Install Chrome and Fonts
       run: |
         sudo apt-get update
-        sudo apt-get install -y fonts-noto-cjk fonts-noto-cjk-extra google-chrome-stable xvfb
+        sudo apt-get install -y google-chrome-stable xvfb fonts-noto-cjk
         
     - name: Run Checkin with Xvfb
       env:
